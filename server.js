@@ -52,16 +52,17 @@ app.post("/api/start", checkAuth, (req, res) => {
   const {
     id: requestedId,
     inputUrl, rtmpUrl, streamKey,
-    videoBitrate = "500k", audioBitrate = "128k",
-    showLogo = false, logoText = ""
+    videoBitrate = "100k", audioBitrate = "128k",
+    showLogo = false, logoText = "",
+    audioOnly = false,   // skip video entirely
+    lowCpu = true        // use minimal video settings by default
   } = req.body;
 
   if (!inputUrl || !rtmpUrl || !streamKey)
     return res.status(400).json({ error: "inputUrl, rtmpUrl and streamKey are required" });
 
-  // If an id is provided and already running, reject
   const id = requestedId || makeId();
-  if (instances[id] && instances[id].status === "live" || instances[id] && instances[id].status === "connecting")
+  if (instances[id] && (instances[id].status === "live" || instances[id].status === "connecting"))
     return res.status(409).json({ error: `Instance "${id}" is already running. Stop it first or use a different name.` });
 
   const rtmpTarget = rtmpUrl.replace(/\/$/, "") + "/" + streamKey;
@@ -69,29 +70,62 @@ app.post("/api/start", checkAuth, (req, res) => {
   instances[id] = {
     process: null,
     status: "connecting",
-    config: { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, showLogo, logoText },
+    config: { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, showLogo, logoText, audioOnly, lowCpu },
     logs: [],
     startedAt: new Date().toISOString()
   };
 
-  logTo(id, `Starting: ${inputUrl} → ${rtmpTarget}`);
+  logTo(id, `Starting [${audioOnly ? "audio-only" : lowCpu ? "low-cpu" : "normal"}]: ${inputUrl} → ${rtmpTarget}`);
 
-  const args = [
-    "-re",
-    "-i", inputUrl,
-    "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
-    "-map", "1:v", "-map", "0:a",
-    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-    "-b:v", videoBitrate, "-maxrate", videoBitrate, "-bufsize", "1000k",
-    "-g", "60", "-r", "30",
-  ];
+  let args;
 
-  if (showLogo && logoText) {
-    const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
-    args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=10`);
+  if (audioOnly) {
+    // ── Audio-only mode: no video track at all, minimal CPU ──
+    args = [
+      "-re",
+      "-i", inputUrl,
+      "-vn",                          // no video
+      "-c:a", "aac",
+      "-b:a", audioBitrate,
+      "-ar", "44100", "-ac", "2",
+      "-f", "flv", rtmpTarget
+    ];
+  } else if (lowCpu) {
+    // ── Low-CPU mode: tiny 320x180 black canvas, very low bitrate ──
+    // Uses ~5–10% CPU vs ~50% for full 1280x720
+    args = [
+      "-re",
+      "-i", inputUrl,
+      "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=10",  // 320×180 @ 10fps
+      "-map", "1:v", "-map", "0:a",
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-tune", "stillimage",
+      "-b:v", "80k", "-maxrate", "80k", "-bufsize", "160k",       // tiny bitrate
+      "-g", "20", "-r", "10",                                      // 10fps keyframe every 2s
+    ];
+    if (showLogo && logoText) {
+      const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
+      args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=14:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=4`);
+    }
+    args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", "-f", "flv", rtmpTarget);
+  } else {
+    // ── Normal mode: full 1280x720 ──
+    args = [
+      "-re",
+      "-i", inputUrl,
+      "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
+      "-map", "1:v", "-map", "0:a",
+      "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+      "-b:v", videoBitrate, "-maxrate", videoBitrate, "-bufsize", "1000k",
+      "-g", "60", "-r", "30",
+    ];
+    if (showLogo && logoText) {
+      const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
+      args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=10`);
+    }
+    args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", "-f", "flv", rtmpTarget);
   }
-
-  args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", "-f", "flv", rtmpTarget);
 
   const proc = spawn("ffmpeg", args);
   instances[id].process = proc;
