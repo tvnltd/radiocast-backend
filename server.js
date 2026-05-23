@@ -23,7 +23,6 @@ function checkAuth(req, res, next) {
 }
 
 // ── Multi-instance store ──
-// instances[id] = { process, status, config, logs, startedAt }
 const instances = {};
 
 function makeId() {
@@ -47,90 +46,66 @@ function killInstance(id) {
   }
 }
 
-// ── Start a new instance ──
-app.post("/api/start", checkAuth, (req, res) => {
-  const {
-    id: requestedId,
-    inputUrl, rtmpUrl, streamKey,
-    videoBitrate = "100k", audioBitrate = "128k",
-    showLogo = false, logoText = "",
-    audioOnly = false,   // skip video entirely
-    lowCpu = true        // use minimal video settings by default
-  } = req.body;
-
-  if (!inputUrl || !rtmpUrl || !streamKey)
-    return res.status(400).json({ error: "inputUrl, rtmpUrl and streamKey are required" });
-
-  const id = requestedId || makeId();
-  if (instances[id] && (instances[id].status === "live" || instances[id].status === "connecting"))
-    return res.status(409).json({ error: `Instance "${id}" is already running. Stop it first or use a different name.` });
-
+function buildArgs(id) {
+  const { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, audioOnly, lowCpu, showLogo, logoText } = instances[id].config;
   const rtmpTarget = rtmpUrl.replace(/\/$/, "") + "/" + streamKey;
 
-  instances[id] = {
-    process: null,
-    status: "connecting",
-    config: { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, showLogo, logoText, audioOnly, lowCpu },
-    logs: [],
-    startedAt: new Date().toISOString()
-  };
+  // Reconnect flags — retry if source MP3 drops briefly
+  const rc = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"];
 
-  logTo(id, `Starting [${audioOnly ? "audio-only" : lowCpu ? "low-cpu" : "normal"}]: ${inputUrl} → ${rtmpTarget}`);
-
-  let args;
+  // Extra FLV flags — prevents Mixcloud/RTMP rejection due to missing duration metadata
+  const flvFlags = ["-flvflags", "no_duration_filesize"];
 
   if (audioOnly) {
-    // ── Audio-only mode: no video track at all, minimal CPU ──
-    args = [
-      "-re",
-      "-i", inputUrl,
-      "-vn",                          // no video
-      "-c:a", "aac",
-      "-b:a", audioBitrate,
-      "-ar", "44100", "-ac", "2",
-      "-f", "flv", rtmpTarget
-    ];
-  } else if (lowCpu) {
-    // ── Low-CPU mode: tiny 320x180 black canvas, very low bitrate ──
-    // Uses ~5–10% CPU vs ~50% for full 1280x720
-    args = [
-      "-re",
-      "-i", inputUrl,
-      "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=10",  // 320×180 @ 10fps
+    return ["-re", ...rc, "-i", inputUrl,
+      "-vn", "-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2",
+      ...flvFlags, "-f", "flv", rtmpTarget];
+  }
+
+  if (lowCpu) {
+    const args = ["-re", ...rc, "-i", inputUrl,
+      "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=10",
       "-map", "1:v", "-map", "0:a",
-      "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-tune", "stillimage",
-      "-b:v", "80k", "-maxrate", "80k", "-bufsize", "160k",       // tiny bitrate
-      "-g", "20", "-r", "10",                                      // 10fps keyframe every 2s
-    ];
+      "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+      "-b:v", "80k", "-maxrate", "80k", "-bufsize", "160k",
+      "-g", "20", "-r", "10"];
     if (showLogo && logoText) {
       const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
       args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=14:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=4`);
     }
-    args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", "-f", "flv", rtmpTarget);
-  } else {
-    // ── Normal mode: full 1280x720 ──
-    args = [
-      "-re",
-      "-i", inputUrl,
-      "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
-      "-map", "1:v", "-map", "0:a",
-      "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-      "-b:v", videoBitrate, "-maxrate", videoBitrate, "-bufsize", "1000k",
-      "-g", "60", "-r", "30",
-    ];
-    if (showLogo && logoText) {
-      const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
-      args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=10`);
-    }
-    args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", "-f", "flv", rtmpTarget);
+    args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", ...flvFlags, "-f", "flv", rtmpTarget);
+    return args;
   }
 
+  // Normal
+  const args = ["-re", ...rc, "-i", inputUrl,
+    "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
+    "-map", "1:v", "-map", "0:a",
+    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+    "-b:v", videoBitrate, "-maxrate", videoBitrate, "-bufsize", "1000k",
+    "-g", "60", "-r", "30"];
+  if (showLogo && logoText) {
+    const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
+    args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=10`);
+  }
+  args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", ...flvFlags, "-f", "flv", rtmpTarget);
+  return args;
+}
+
+// ── Auto-restart spawn loop ──
+const MAX_RESTARTS = 20;
+const RESTART_DELAY_MS = 3000;
+
+function spawnFFmpeg(id) {
+  if (!instances[id] || instances[id].stopped) return;
+
+  const args = buildArgs(id);
   const proc = spawn("ffmpeg", args);
   instances[id].process = proc;
+  instances[id].status  = "connecting";
 
   proc.stderr.on("data", (data) => {
+    if (!instances[id]) return;
     const text = data.toString().trim();
     if (!text) return;
     if (/frame=|fps=|bitrate=|speed=/.test(text)) logTo(id, text, "progress");
@@ -142,43 +117,88 @@ app.post("/api/start", checkAuth, (req, res) => {
   });
 
   proc.on("close", (code) => {
+    if (!instances[id] || instances[id].stopped) return;
     logTo(id, `FFmpeg exited (code ${code})`, code === 0 ? "info" : "error");
-    if (instances[id]) {
-      instances[id].status = code === 0 ? "idle" : "error";
-      instances[id].process = null;
+    instances[id].process = null;
+
+    if (instances[id].restarts >= MAX_RESTARTS) {
+      logTo(id, `Max restarts (${MAX_RESTARTS}) reached. Stopping.`, "error");
+      instances[id].status = "error";
+      return;
     }
+    instances[id].restarts++;
+    logTo(id, `Auto-restarting in ${RESTART_DELAY_MS / 1000}s (attempt ${instances[id].restarts}/${MAX_RESTARTS})…`, "info");
+    setTimeout(() => spawnFFmpeg(id), RESTART_DELAY_MS);
   });
 
   proc.on("error", (err) => {
-    logTo(id, `Failed to spawn FFmpeg: ${err.message}`, "error");
-    if (instances[id]) { instances[id].status = "error"; instances[id].process = null; }
+    if (!instances[id]) return;
+    logTo(id, `Spawn error: ${err.message}`, "error");
+    instances[id].process = null;
+    instances[id].status  = "error";
   });
 
+  // After 5s without error, mark live and reset restart counter
   setTimeout(() => {
-    if (instances[id] && instances[id].status === "connecting") instances[id].status = "live";
-  }, 4000);
+    if (instances[id]?.status === "connecting") instances[id].status = "live";
+    if (instances[id]?.status === "live")       instances[id].restarts = 0;
+  }, 5000);
+}
+
+// ── Start ──
+app.post("/api/start", checkAuth, (req, res) => {
+  const {
+    id: requestedId,
+    inputUrl, rtmpUrl, streamKey,
+    videoBitrate = "100k", audioBitrate = "128k",
+    showLogo = false, logoText = "",
+    audioOnly = false,
+    lowCpu = true
+  } = req.body;
+
+  if (!inputUrl || !rtmpUrl || !streamKey)
+    return res.status(400).json({ error: "inputUrl, rtmpUrl and streamKey are required" });
+
+  const id = requestedId || makeId();
+  if (instances[id] && (instances[id].status === "live" || instances[id].status === "connecting"))
+    return res.status(409).json({ error: `Instance "${id}" is already running. Stop it first or use a different name.` });
+
+  instances[id] = {
+    process: null, status: "connecting",
+    config: { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, showLogo, logoText, audioOnly, lowCpu },
+    logs: [], startedAt: new Date().toISOString(),
+    stopped: false, restarts: 0
+  };
+
+  logTo(id, `Starting [${audioOnly ? "audio-only" : lowCpu ? "low-cpu" : "normal"}]: ${inputUrl} → ${rtmpUrl}/${streamKey}`);
+  spawnFFmpeg(id);
 
   res.json({ ok: true, id, message: `Stream "${id}" starting…` });
 });
 
-// ── Stop one instance ──
+// ── Stop one ──
 app.post("/api/stop/:id", checkAuth, (req, res) => {
   const { id } = req.params;
   if (!instances[id]) return res.status(404).json({ error: `No instance "${id}" found` });
   logTo(id, "Stopped by user");
+  instances[id].stopped = true;
   killInstance(id);
   instances[id].status = "idle";
   res.json({ ok: true, message: `Stream "${id}" stopped` });
 });
 
-// ── Stop ALL instances ──
+// ── Stop ALL ──
 app.post("/api/stopall", checkAuth, (req, res) => {
   const ids = Object.keys(instances);
-  ids.forEach(id => { killInstance(id); instances[id].status = "idle"; });
+  ids.forEach(id => {
+    instances[id].stopped = true;
+    killInstance(id);
+    instances[id].status = "idle";
+  });
   res.json({ ok: true, message: `Stopped ${ids.length} stream(s)` });
 });
 
-// ── Status of one instance ──
+// ── Status ──
 app.get("/api/status/:id", checkAuth, (req, res) => {
   const { id } = req.params;
   if (!instances[id]) return res.status(404).json({ error: `No instance "${id}" found` });
@@ -186,14 +206,11 @@ app.get("/api/status/:id", checkAuth, (req, res) => {
   res.json({ id, status: inst.status, config: inst.config, logs: inst.logs.slice(-60), startedAt: inst.startedAt });
 });
 
-// ── List all instances ──
+// ── List all ──
 app.get("/api/instances", checkAuth, (req, res) => {
   const list = Object.entries(instances).map(([id, inst]) => ({
-    id,
-    status: inst.status,
-    startedAt: inst.startedAt,
-    inputUrl: inst.config?.inputUrl,
-    rtmpUrl: inst.config?.rtmpUrl,
+    id, status: inst.status, startedAt: inst.startedAt,
+    inputUrl: inst.config?.inputUrl, rtmpUrl: inst.config?.rtmpUrl,
   }));
   res.json({ instances: list });
 });
@@ -204,9 +221,19 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true, activeStreams: running });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`RadioCast multi-instance backend on port ${PORT}`));
+// ── Keepalive self-ping — prevents Render/Railway free tier sleep ──
+const KEEPALIVE_URL = process.env.KEEPALIVE_URL || null;
+setInterval(() => {
+  const url = KEEPALIVE_URL || `http://localhost:${PORT}/api/health`;
+  const mod = url.startsWith("https") ? require("https") : require("http");
+  mod.get(url, () => {}).on("error", () => {});
+  console.log(`[keepalive] ping → ${url}`);
+}, 4 * 60 * 1000);
 
-process.on("exit", () => Object.keys(instances).forEach(killInstance));
-process.on("SIGINT", () => { Object.keys(instances).forEach(killInstance); process.exit(0); });
-process.on("SIGTERM", () => { Object.keys(instances).forEach(killInstance); process.exit(0); });
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`RadioCast backend on port ${PORT}`));
+
+const cleanup = () => { Object.keys(instances).forEach(killInstance); process.exit(0); };
+process.on("exit",   () => Object.keys(instances).forEach(killInstance));
+process.on("SIGINT",  cleanup);
+process.on("SIGTERM", cleanup);
