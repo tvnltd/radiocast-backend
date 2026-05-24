@@ -50,45 +50,56 @@ function buildArgs(id) {
   const { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, audioOnly, lowCpu, showLogo, logoText } = instances[id].config;
   const rtmpTarget = rtmpUrl.replace(/\/$/, "") + "/" + streamKey;
 
-  // Reconnect flags — retry if source MP3 drops briefly
-  const rc = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"];
-
-  // Extra FLV flags — prevents Mixcloud/RTMP rejection due to missing duration metadata
-  const flvFlags = ["-flvflags", "no_duration_filesize"];
+  // Reconnect flags must come BEFORE -i for HTTP sources
+  // stream_loop -1 = loop infinitely if source is a finite file
+  const inputFlags = [
+    "-reconnect", "1",
+    "-reconnect_streamed", "1",
+    "-reconnect_delay_max", "10",
+    "-stream_loop", "-1",
+    "-timeout", "10000000",   // 10s socket timeout (microseconds)
+  ];
 
   if (audioOnly) {
-    return ["-re", ...rc, "-i", inputUrl,
-      "-vn", "-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2",
-      ...flvFlags, "-f", "flv", rtmpTarget];
+    return [
+      "-re", ...inputFlags, "-i", inputUrl,
+      "-vn",
+      "-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2",
+      "-f", "flv", rtmpTarget
+    ];
   }
 
   if (lowCpu) {
-    const args = ["-re", ...rc, "-i", inputUrl,
+    const args = [
+      "-re", ...inputFlags, "-i", inputUrl,
       "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=10",
       "-map", "1:v", "-map", "0:a",
       "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
       "-b:v", "80k", "-maxrate", "80k", "-bufsize", "160k",
-      "-g", "20", "-r", "10"];
+      "-g", "20", "-r", "10",
+    ];
     if (showLogo && logoText) {
       const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
       args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=14:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=4`);
     }
-    args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", ...flvFlags, "-f", "flv", rtmpTarget);
+    args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", "-f", "flv", rtmpTarget);
     return args;
   }
 
   // Normal
-  const args = ["-re", ...rc, "-i", inputUrl,
+  const args = [
+    "-re", ...inputFlags, "-i", inputUrl,
     "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
     "-map", "1:v", "-map", "0:a",
     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
     "-b:v", videoBitrate, "-maxrate", videoBitrate, "-bufsize", "1000k",
-    "-g", "60", "-r", "30"];
+    "-g", "60", "-r", "30",
+  ];
   if (showLogo && logoText) {
     const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
     args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=10`);
   }
-  args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", ...flvFlags, "-f", "flv", rtmpTarget);
+  args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", "-f", "flv", rtmpTarget);
   return args;
 }
 
