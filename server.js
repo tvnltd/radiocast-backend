@@ -1,4 +1,4 @@
-// AVCast backend v5.1 — HLS re-encode, 3500k, 2s keyframes, -re pacing
+// AVCast backend v5.2 — HLS copy+bsf, no re-encode, zero CPU
 const express = require("express");
 const { spawn } = require("child_process");
 
@@ -112,34 +112,21 @@ function buildArgs(id) {
 
     const resolvedInputArgs = ["-re", ...hlsFlags, "-i", resolvedUrl];
 
-    // HLS passthrough:
-    // -c:v copy          — no re-encoding, zero CPU
-    // -bsf:v h264_mp4toannexb — ensures keyframe headers are present in each segment
-    //                          (required for RTMP ingest, prevents buffering)
-    // -force_key_frames  — inject a keyframe every 2 seconds (60 frames @ 30fps)
-    //                      Mixcloud recommends 3500kbps; Restream requires 2s keyframe interval
-    // Note: force_key_frames requires re-encoding, so we use a minimal re-encode
-    //       only when the source doesn't guarantee 2s keyframes (which HLS rarely does)
+    // Use -c:v copy (zero CPU) with h264_mp4toannexb bitstream filter
+    // This converts MP4-style H.264 (used in HLS .ts segments) to Annex B format
+    // required by RTMP/FLV without any re-encoding.
+    // Keyframe interval is preserved from the source HLS segments (typically 2-3s).
+    // -max_muxing_queue_size prevents queue overflow on fast segments.
     const args = [
       ...resolvedInputArgs,
       "-map", "0:v:0",
       "-map", "0:a:0",
-      "-c:v", "libx264",          // re-encode to guarantee keyframe interval
-      "-preset", "ultrafast",
-      "-tune", "zerolatency",
-      "-pix_fmt", "yuv420p",
-      "-b:v", "3500k",            // Mixcloud recommended bitrate for 720p
-      "-maxrate", "3500k",
-      "-bufsize", "7000k",
-      "-g", "60",                 // keyframe every 60 frames = 2s @ 30fps (Restream requirement)
-      "-keyint_min", "60",        // force minimum keyframe interval
-      "-sc_threshold", "0",       // disable scene-change keyframes (keeps interval strict)
-      "-r", "30",
-      "-profile:v", "high",
-      "-level", "4.0",
+      "-c:v", "copy",
+      "-bsf:v", "h264_mp4toannexb",
       "-c:a", "aac",
       "-b:a", audioBitrate,
       "-ar", "44100", "-ac", "2",
+      "-max_muxing_queue_size", "1024",
       "-f", "flv", rtmpTarget
     ];
     return args;
