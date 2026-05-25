@@ -1,4 +1,4 @@
-// AVCast backend v5.2 — HLS copy+bsf, no re-encode, zero CPU
+// AVCast backend v5.3 — HLS copy+bsf+flvflags+timescale fix
 const express = require("express");
 const { spawn } = require("child_process");
 
@@ -112,11 +112,14 @@ function buildArgs(id) {
 
     const resolvedInputArgs = ["-re", ...hlsFlags, "-i", resolvedUrl];
 
-    // Use -c:v copy (zero CPU) with h264_mp4toannexb bitstream filter
-    // This converts MP4-style H.264 (used in HLS .ts segments) to Annex B format
-    // required by RTMP/FLV without any re-encoding.
-    // Keyframe interval is preserved from the source HLS segments (typically 2-3s).
-    // -max_muxing_queue_size prevents queue overflow on fast segments.
+    // -c:v copy — zero CPU, remux H.264 directly
+    // -bsf:v h264_mp4toannexb — convert TS NAL units to Annex B for RTMP/FLV
+    // -flvflags no_duration_filesize — don't write duration/filesize in header
+    //   (prevents Mixcloud from seeing a "finite file" and dropping the stream)
+    // -video_track_timescale 90000 — set explicit timescale matching HLS source (90k tbn)
+    //   prevents timestamp discontinuities that cause "Connection reset by peer"
+    // -max_interleave_delta 0 — don't buffer packets waiting for interleaving,
+    //   reduces latency and prevents buffer starvation at segment boundaries
     const args = [
       ...resolvedInputArgs,
       "-map", "0:v:0",
@@ -127,6 +130,9 @@ function buildArgs(id) {
       "-b:a", audioBitrate,
       "-ar", "44100", "-ac", "2",
       "-max_muxing_queue_size", "1024",
+      "-max_interleave_delta", "0",
+      "-video_track_timescale", "90000",
+      "-flvflags", "no_duration_filesize",
       "-f", "flv", rtmpTarget
     ];
     return args;
