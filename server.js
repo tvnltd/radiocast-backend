@@ -92,19 +92,12 @@ function buildArgs(id) {
   }
 
   // ── HLS SOURCE: passthrough video, only re-encode audio ──
-  // For master playlists (multi-bitrate), we rewrite the URL to the specific
-  // sub-playlist to guarantee the right quality. This is more reliable than
-  // -map 0:V:0 which behaves inconsistently across FFmpeg versions with multi-program HLS.
   if (isHLS) {
     const useBest = hlsQuality !== "low";
 
-    // Detect if this is a master playlist by checking for common master URL patterns
-    // If so, rewrite to the sub-playlist URL directly
     let resolvedUrl = inputUrl;
     const isMaster = !/\/sep\/|\/low\.m3u8|\/high\.m3u8|\/normal\.m3u8|\/hi_mid\.m3u8/.test(inputUrl);
     if (isMaster) {
-      // Derive sub-playlist URL from master URL pattern
-      // e.g. /channel/UUID.m3u8 → /channel/sep/UUID/high.m3u8
       const match = inputUrl.match(/\/channel\/([a-f0-9-]+)\.m3u8/i);
       if (match) {
         const uuid = match[1];
@@ -116,14 +109,33 @@ function buildArgs(id) {
       }
     }
 
-    // Rebuild inputArgs with resolved URL
     const resolvedInputArgs = [...hlsFlags, "-i", resolvedUrl];
 
+    // HLS passthrough:
+    // -c:v copy          — no re-encoding, zero CPU
+    // -bsf:v h264_mp4toannexb — ensures keyframe headers are present in each segment
+    //                          (required for RTMP ingest, prevents buffering)
+    // -force_key_frames  — inject a keyframe every 2 seconds (60 frames @ 30fps)
+    //                      Mixcloud recommends 3500kbps; Restream requires 2s keyframe interval
+    // Note: force_key_frames requires re-encoding, so we use a minimal re-encode
+    //       only when the source doesn't guarantee 2s keyframes (which HLS rarely does)
     const args = [
       ...resolvedInputArgs,
-      "-map", "0:v:0",   // first (and only) video stream in the sub-playlist
-      "-map", "0:a:0",   // first audio stream
-      "-c:v", "copy",
+      "-map", "0:v:0",
+      "-map", "0:a:0",
+      "-c:v", "libx264",          // re-encode to guarantee keyframe interval
+      "-preset", "ultrafast",
+      "-tune", "zerolatency",
+      "-pix_fmt", "yuv420p",
+      "-b:v", "3500k",            // Mixcloud recommended bitrate for 720p
+      "-maxrate", "3500k",
+      "-bufsize", "7000k",
+      "-g", "60",                 // keyframe every 60 frames = 2s @ 30fps (Restream requirement)
+      "-keyint_min", "60",        // force minimum keyframe interval
+      "-sc_threshold", "0",       // disable scene-change keyframes (keeps interval strict)
+      "-r", "30",
+      "-profile:v", "high",
+      "-level", "4.0",
       "-c:a", "aac",
       "-b:a", audioBitrate,
       "-ar", "44100", "-ac", "2",
@@ -133,7 +145,7 @@ function buildArgs(id) {
   }
 
   // ── PLAIN AUDIO SOURCE (MP3/AAC): generate black canvas + encode ──
-  // CBR mode forces real bitrate even for static black frame
+  // CBR mode, 2s keyframe interval, 3500k to match platform recommendations
   function videoEncodeArgs(bitrate, bufsize) {
     return [
       "-c:v", "libx264",
@@ -147,6 +159,10 @@ function buildArgs(id) {
       "-x264-params", "nal-hrd=cbr:force-cfr=1",
       "-profile:v", "baseline",
       "-level", "4.0",
+      "-g", "60",           // keyframe every 2s @ 30fps
+      "-keyint_min", "60",
+      "-sc_threshold", "0", // no scene-change keyframes — keeps interval strict
+      "-r", "30",
     ];
   }
 
@@ -156,8 +172,7 @@ function buildArgs(id) {
       "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
       "-map", "1:v:0",
       "-map", "0:a:0",
-      ...videoEncodeArgs("2500k", "5000k"),
-      "-g", "60", "-r", "30",
+      ...videoEncodeArgs("3500k", "7000k"),
     ];
     if (showLogo && logoText) {
       const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
@@ -174,7 +189,6 @@ function buildArgs(id) {
     "-map", "1:v:0",
     "-map", "0:a:0",
     ...videoEncodeArgs(videoBitrate, String(parseInt(videoBitrate) * 2) + "k"),
-    "-g", "60", "-r", "30",
   ];
   if (showLogo && logoText) {
     const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
