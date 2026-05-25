@@ -47,7 +47,7 @@ function killInstance(id) {
 }
 
 function buildArgs(id) {
-  const { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, audioOnly, lowCpu, showLogo, logoText } = instances[id].config;
+  const { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, audioOnly, lowCpu, showLogo, logoText, hlsQuality = "best" } = instances[id].config;
   const rtmpTarget = rtmpUrl.replace(/\/$/, "") + "/" + streamKey;
 
   // Detect HLS input
@@ -74,11 +74,18 @@ function buildArgs(id) {
     "-reconnect_delay_max", "10",
     "-thread_queue_size", "512",
     "-err_detect", "ignore_err",
+    // Force highest quality variant — without this FFmpeg picks the lowest
+    "-hls_flags", "prefer_x_start",
+    "-var_stream_map", "v:0,a:0",
   ];
 
-  const inputArgs = isHLS
+  // For master playlists, instruct FFmpeg to pick highest bandwidth program
+  // by selecting the last program (highest bitrate variants are listed last)
+  const hlsInputArgs = isHLS
     ? [...hlsFlags, "-i", inputUrl]
     : [...httpFlags, "-i", inputUrl];
+
+  const inputArgs = hlsInputArgs;
 
   // ── AUDIO ONLY ──
   if (audioOnly) {
@@ -93,12 +100,17 @@ function buildArgs(id) {
 
   // ── HLS SOURCE: passthrough video, only re-encode audio ──
   // Zero encoding cost — uses ~1% CPU regardless of resolution
+  // 0:V:0 (capital V) = FFmpeg picks the highest resolution stream automatically
+  // 0:v:0 (lowercase v) = first declared stream (usually lowest quality)
   if (isHLS) {
+    const useBest = hlsQuality !== "low";
+    const videoMap = useBest
+      ? ["-map", "0:V:0", "-map", "0:a:0"]   // highest resolution variant
+      : ["-map", "0:v:0", "-map", "0:a:0"];  // lowest/first variant
     const args = [
       ...inputArgs,
-      "-map", "0:v:0",          // first video stream from HLS (already H.264)
-      "-map", "0:a:0",          // first audio stream
-      "-c:v", "copy",           // NO re-encoding — pass H.264 directly to RTMP
+      ...videoMap,
+      "-c:v", "copy",
       "-c:a", "aac",
       "-b:a", audioBitrate,
       "-ar", "44100", "-ac", "2",
@@ -220,7 +232,8 @@ app.post("/api/start", checkAuth, (req, res) => {
     videoBitrate = "100k", audioBitrate = "128k",
     showLogo = false, logoText = "",
     audioOnly = false,
-    lowCpu = true
+    lowCpu = true,
+    hlsQuality = "best"   // "best" | "low" — which HLS variant to use
   } = req.body;
 
   if (!inputUrl || !rtmpUrl || !streamKey)
@@ -232,12 +245,12 @@ app.post("/api/start", checkAuth, (req, res) => {
 
   instances[id] = {
     process: null, status: "connecting",
-    config: { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, showLogo, logoText, audioOnly, lowCpu },
+    config: { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, showLogo, logoText, audioOnly, lowCpu, hlsQuality },
     logs: [], startedAt: new Date().toISOString(),
     stopped: false, restarts: 0
   };
 
-  logTo(id, `Starting [${audioOnly ? "audio-only" : lowCpu ? "low-cpu" : "normal"}]: ${inputUrl} → ${rtmpUrl}/${streamKey}`);
+  logTo(id, `Starting [${audioOnly ? "audio-only" : lowCpu ? "low-cpu" : "normal"}] [hls:${hlsQuality}]: ${inputUrl} → ${rtmpUrl}/${streamKey}`);
   spawnFFmpeg(id);
 
   res.json({ ok: true, id, message: `Stream "${id}" starting…` });
