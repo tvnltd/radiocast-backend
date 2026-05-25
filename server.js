@@ -51,10 +51,11 @@ function buildArgs(id) {
   const rtmpTarget = rtmpUrl.replace(/\/$/, "") + "/" + streamKey;
 
   // Detect HLS input — M3U8 needs different flags than plain HTTP audio
-  const isHLS = /\.m3u8$/i.test(inputUrl) || /hls/i.test(inputUrl);
+  const isHLS = /\.m3u8(\?|$)/i.test(inputUrl) || /hls/i.test(inputUrl);
 
   // Base input flags for plain HTTP streams (MP3, AAC, OGG…)
   const httpFlags = [
+    "-re",
     "-reconnect", "1",
     "-reconnect_streamed", "1",
     "-reconnect_delay_max", "10",
@@ -62,25 +63,29 @@ function buildArgs(id) {
     "-timeout", "10000000",
   ];
 
-  // HLS-specific flags — live_start_index -1 = start from most recent segment
+  // HLS-specific flags:
+  // - NO -re (HLS self-throttles via segment timing)
+  // - live_start_index -3 = start near live edge (last 3 segments)
+  // - allowed_extensions = accept ts/aac/mp3 segments
+  // - max_reload = keep retrying the playlist on error
   const hlsFlags = [
-    "-re",
-    "-live_start_index", "-1",
+    "-allowed_extensions", "ALL",
+    "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+    "-live_start_index", "-3",
+    "-max_reload", "1000",
+    "-m3u8_hold_counters", "1000",
     "-reconnect", "1",
     "-reconnect_delay_max", "10",
   ];
 
-  // Choose the right input flag set
-  const inputFlags = isHLS ? hlsFlags : ["-re", ...httpFlags];
-
-  // For HLS the -re goes inside hlsFlags above, so we don't prepend it again
   const inputArgs = isHLS
     ? [...hlsFlags, "-i", inputUrl]
-    : ["-re", ...httpFlags, "-i", inputUrl];
+    : [...httpFlags, "-i", inputUrl];
 
   if (audioOnly) {
     return [
       ...inputArgs,
+      "-map", "0:a:0",          // only first audio track
       "-vn",
       "-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2",
       "-f", "flv", rtmpTarget
@@ -91,7 +96,8 @@ function buildArgs(id) {
     const args = [
       ...inputArgs,
       "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=10",
-      "-map", "1:v", "-map", "0:a",
+      "-map", "1:v:0",          // black canvas video
+      "-map", "0:a:0",          // only first audio track from source
       "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
       "-b:v", "80k", "-maxrate", "80k", "-bufsize", "160k",
       "-g", "20", "-r", "10",
@@ -108,7 +114,8 @@ function buildArgs(id) {
   const args = [
     ...inputArgs,
     "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
-    "-map", "1:v", "-map", "0:a",
+    "-map", "1:v:0",            // black canvas video
+    "-map", "0:a:0",            // only first audio track from source
     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
     "-b:v", videoBitrate, "-maxrate", videoBitrate, "-bufsize", "1000k",
     "-g", "60", "-r", "30",
