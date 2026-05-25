@@ -92,17 +92,37 @@ function buildArgs(id) {
   }
 
   // ── HLS SOURCE: passthrough video, only re-encode audio ──
-  // Zero encoding cost — uses ~1% CPU regardless of resolution
-  // 0:V:0 (capital V) = FFmpeg picks the highest resolution stream automatically
-  // 0:v:0 (lowercase v) = first declared stream (usually lowest quality)
+  // For master playlists (multi-bitrate), we rewrite the URL to the specific
+  // sub-playlist to guarantee the right quality. This is more reliable than
+  // -map 0:V:0 which behaves inconsistently across FFmpeg versions with multi-program HLS.
   if (isHLS) {
     const useBest = hlsQuality !== "low";
-    const videoMap = useBest
-      ? ["-map", "0:V:0", "-map", "0:a:0"]   // highest resolution variant
-      : ["-map", "0:v:0", "-map", "0:a:0"];  // lowest/first variant
+
+    // Detect if this is a master playlist by checking for common master URL patterns
+    // If so, rewrite to the sub-playlist URL directly
+    let resolvedUrl = inputUrl;
+    const isMaster = !/\/sep\/|\/low\.m3u8|\/high\.m3u8|\/normal\.m3u8|\/hi_mid\.m3u8/.test(inputUrl);
+    if (isMaster) {
+      // Derive sub-playlist URL from master URL pattern
+      // e.g. /channel/UUID.m3u8 → /channel/sep/UUID/high.m3u8
+      const match = inputUrl.match(/\/channel\/([a-f0-9-]+)\.m3u8/i);
+      if (match) {
+        const uuid = match[1];
+        const base = inputUrl.replace(/\/channel\/[^/]+\.m3u8.*/, "");
+        resolvedUrl = useBest
+          ? `${base}/channel/sep/${uuid}/high.m3u8`
+          : `${base}/channel/sep/${uuid}/low.m3u8`;
+        logTo(id, `HLS quality rewrite: ${inputUrl} → ${resolvedUrl}`);
+      }
+    }
+
+    // Rebuild inputArgs with resolved URL
+    const resolvedInputArgs = [...hlsFlags, "-i", resolvedUrl];
+
     const args = [
-      ...inputArgs,
-      ...videoMap,
+      ...resolvedInputArgs,
+      "-map", "0:v:0",   // first (and only) video stream in the sub-playlist
+      "-map", "0:a:0",   // first audio stream
       "-c:v", "copy",
       "-c:a", "aac",
       "-b:a", audioBitrate,
