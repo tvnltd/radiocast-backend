@@ -94,35 +94,50 @@ function buildArgs(id) {
     ];
   }
 
+  // Shared video encoding args — CBR mode forces real bitrate output
+  // even for static black frames, which all major platforms require
+  function videoArgs(bitrate, bufsize) {
+    return [
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-tune", "stillimage",
+      "-pix_fmt", "yuv420p",
+      "-b:v", bitrate,
+      "-minrate", bitrate,        // force minimum bitrate — critical for static frames
+      "-maxrate", bitrate,
+      "-bufsize", bufsize,
+      "-x264-params", "nal-hrd=cbr:force-cfr=1",  // constant bitrate mode
+      "-profile:v", "baseline",   // broadest compatibility
+      "-level", "4.0",
+    ];
+  }
+
   if (lowCpu) {
+    // 720p @ 30fps, 2500k — meets Mixcloud, YouTube Live, Facebook Live minimums
     const args = [
       ...inputArgs,
-      "-f", "lavfi", "-i", "color=c=black:size=640x360:rate=15",
-      "-map", "1:v:0",          // black canvas video
-      "-map", "0:a:0",          // only first audio track from source
-      "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-      "-b:v", "300k", "-maxrate", "300k", "-bufsize", "600k",
-      "-g", "30", "-r", "15",
-      "-pix_fmt", "yuv420p",
+      "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
+      "-map", "1:v:0",
+      "-map", "0:a:0",
+      ...videoArgs("2500k", "5000k"),
+      "-g", "60", "-r", "30",
     ];
     if (showLogo && logoText) {
       const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
-      args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=14:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=4`);
+      args.push("-vf", `drawtext=text='${safe}':fontcolor=white:fontsize=28:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=8`);
     }
     args.push("-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2", "-f", "flv", rtmpTarget);
     return args;
   }
 
-  // Normal
+  // Normal — same 720p but user-configurable bitrate
   const args = [
     ...inputArgs,
     "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
-    "-map", "1:v:0",            // black canvas video
-    "-map", "0:a:0",            // only first audio track from source
-    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-    "-b:v", videoBitrate, "-maxrate", videoBitrate, "-bufsize", "1000k",
+    "-map", "1:v:0",
+    "-map", "0:a:0",
+    ...videoArgs(videoBitrate, String(parseInt(videoBitrate) * 2) + "k"),
     "-g", "60", "-r", "30",
-    "-pix_fmt", "yuv420p",
   ];
   if (showLogo && logoText) {
     const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
