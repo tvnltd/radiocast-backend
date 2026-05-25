@@ -77,6 +77,7 @@ function buildArgs(id) {
     "-reconnect", "1",
     "-reconnect_delay_max", "10",
     "-thread_queue_size", "512",
+    "-err_detect", "ignore_err",   // ignore corrupt packets, keep going
   ];
 
   const inputArgs = isHLS
@@ -96,12 +97,13 @@ function buildArgs(id) {
   if (lowCpu) {
     const args = [
       ...inputArgs,
-      "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=10",
+      "-f", "lavfi", "-i", "color=c=black:size=640x360:rate=15",
       "-map", "1:v:0",          // black canvas video
       "-map", "0:a:0",          // only first audio track from source
       "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-      "-b:v", "80k", "-maxrate", "80k", "-bufsize", "160k",
-      "-g", "20", "-r", "10",
+      "-b:v", "300k", "-maxrate", "300k", "-bufsize", "600k",
+      "-g", "30", "-r", "15",
+      "-pix_fmt", "yuv420p",
     ];
     if (showLogo && logoText) {
       const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
@@ -120,6 +122,7 @@ function buildArgs(id) {
     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
     "-b:v", videoBitrate, "-maxrate", videoBitrate, "-bufsize", "1000k",
     "-g", "60", "-r", "30",
+    "-pix_fmt", "yuv420p",
   ];
   if (showLogo && logoText) {
     const safe = logoText.replace(/'/g, "\\'").replace(/:/g, "\\:");
