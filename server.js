@@ -1,4 +1,4 @@
-// AVCast backend v5.5 — dual HLS mode: copy (Mixcloud) or re-encode 1500k (Restream)
+// AVCast backend v5.8 — single copy mode for all destinations
 const express = require("express");
 const { spawn } = require("child_process");
 
@@ -112,60 +112,26 @@ function buildArgs(id) {
 
     const resolvedInputArgs = ["-re", ...hlsFlags, "-i", resolvedUrl];
 
-    // Two modes controlled by hlsQuality:
-    // "best"  → copy video (zero CPU) — works on Mixcloud, Restream may warn about keyframes
-    // "restream" → re-encode at 1500k ultrafast (low CPU) — fixes 2s keyframe for Restream
-    const reencodeForKeyframes = hlsQuality === "restream";
-
-    let args;
-    if (reencodeForKeyframes) {
-      // Re-encode at low bitrate/ultrafast to fix keyframe interval for Restream etc.
-      // 1500k @ ultrafast uses ~15-20% CPU — manageable on free tier for single stream
-      args = [
-        ...resolvedInputArgs,
-        "-map", "0:v:0",
-        "-map", "0:a:0",
-        "-c:v", "libx264",
-        "-preset", "superfast",
-        "-tune", "zerolatency",
-        "-pix_fmt", "yuv420p",
-        "-b:v", "1500k",
-        "-maxrate", "1500k",
-        "-bufsize", "3000k",
-        "-g", "60",             // keyframe every 2s @ 30fps
-        "-keyint_min", "60",
-        "-sc_threshold", "0",
-        "-r", "30",
-        "-profile:v", "main",
-        "-level", "4.0",
-        "-c:a", "aac",
-        "-b:a", audioBitrate,
-        "-ar", "44100", "-ac", "2",
-        "-af", "aresample=async=1000",
-        "-max_muxing_queue_size", "2048",
-        "-flvflags", "no_duration_filesize",
-        "-f", "flv", rtmpTarget
-      ];
-    } else {
-      // Copy video — zero CPU, preserves original quality/bitrate
-      // Timestamps normalized to handle HLS discontinuity markers
-      args = [
-        ...resolvedInputArgs,
-        "-map", "0:v:0",
-        "-map", "0:a:0",
-        "-c:v", "copy",
-        "-bsf:v", "h264_mp4toannexb",
-        "-avoid_negative_ts", "make_zero",
-        "-c:a", "aac",
-        "-b:a", audioBitrate,
-        "-ar", "44100", "-ac", "2",
-        "-af", "aresample=async=1000",
-        "-max_muxing_queue_size", "2048",
-        "-max_interleave_delta", "0",
-        "-flvflags", "no_duration_filesize",
-        "-f", "flv", rtmpTarget
-      ];
-    }
+    // Copy video — zero CPU, preserves original quality and bitrate.
+    // Works on Mixcloud, Restream, YouTube, and Facebook.
+    // Restream may show a "3.33s keyframe interval" advisory warning — this is
+    // cosmetic only and does not affect stream quality or acceptance.
+    const args = [
+      ...resolvedInputArgs,
+      "-map", "0:v:0",
+      "-map", "0:a:0",
+      "-c:v", "copy",
+      "-bsf:v", "h264_mp4toannexb",
+      "-avoid_negative_ts", "make_zero",
+      "-c:a", "aac",
+      "-b:a", audioBitrate,
+      "-ar", "44100", "-ac", "2",
+      "-af", "aresample=async=1000",
+      "-max_muxing_queue_size", "2048",
+      "-max_interleave_delta", "0",
+      "-flvflags", "no_duration_filesize",
+      "-f", "flv", rtmpTarget
+    ];
     return args;
   }
 
