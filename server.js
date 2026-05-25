@@ -50,19 +50,37 @@ function buildArgs(id) {
   const { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, audioOnly, lowCpu, showLogo, logoText } = instances[id].config;
   const rtmpTarget = rtmpUrl.replace(/\/$/, "") + "/" + streamKey;
 
-  // Reconnect flags must come BEFORE -i for HTTP sources
-  // stream_loop -1 = loop infinitely if source is a finite file
-  const inputFlags = [
+  // Detect HLS input — M3U8 needs different flags than plain HTTP audio
+  const isHLS = /\.m3u8$/i.test(inputUrl) || /hls/i.test(inputUrl);
+
+  // Base input flags for plain HTTP streams (MP3, AAC, OGG…)
+  const httpFlags = [
     "-reconnect", "1",
     "-reconnect_streamed", "1",
     "-reconnect_delay_max", "10",
     "-stream_loop", "-1",
-    "-timeout", "10000000",   // 10s socket timeout (microseconds)
+    "-timeout", "10000000",
   ];
+
+  // HLS-specific flags — live_start_index -1 = start from most recent segment
+  const hlsFlags = [
+    "-re",
+    "-live_start_index", "-1",
+    "-reconnect", "1",
+    "-reconnect_delay_max", "10",
+  ];
+
+  // Choose the right input flag set
+  const inputFlags = isHLS ? hlsFlags : ["-re", ...httpFlags];
+
+  // For HLS the -re goes inside hlsFlags above, so we don't prepend it again
+  const inputArgs = isHLS
+    ? [...hlsFlags, "-i", inputUrl]
+    : ["-re", ...httpFlags, "-i", inputUrl];
 
   if (audioOnly) {
     return [
-      "-re", ...inputFlags, "-i", inputUrl,
+      ...inputArgs,
       "-vn",
       "-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2",
       "-f", "flv", rtmpTarget
@@ -71,7 +89,7 @@ function buildArgs(id) {
 
   if (lowCpu) {
     const args = [
-      "-re", ...inputFlags, "-i", inputUrl,
+      ...inputArgs,
       "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=10",
       "-map", "1:v", "-map", "0:a",
       "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
@@ -88,7 +106,7 @@ function buildArgs(id) {
 
   // Normal
   const args = [
-    "-re", ...inputFlags, "-i", inputUrl,
+    ...inputArgs,
     "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
     "-map", "1:v", "-map", "0:a",
     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
