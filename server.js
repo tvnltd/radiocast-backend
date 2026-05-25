@@ -63,7 +63,7 @@ function buildArgs(id) {
     "-timeout", "10000000",
   ];
 
-  // HLS flags — no -re, HLS self-throttles
+  // HLS flags — no -re, HLS self-throttles via segment timing
   const hlsFlags = [
     "-allowed_extensions", "ALL",
     "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
@@ -74,18 +74,11 @@ function buildArgs(id) {
     "-reconnect_delay_max", "10",
     "-thread_queue_size", "512",
     "-err_detect", "ignore_err",
-    // Force highest quality variant — without this FFmpeg picks the lowest
-    "-hls_flags", "prefer_x_start",
-    "-var_stream_map", "v:0,a:0",
   ];
 
-  // For master playlists, instruct FFmpeg to pick highest bandwidth program
-  // by selecting the last program (highest bitrate variants are listed last)
-  const hlsInputArgs = isHLS
+  const inputArgs = isHLS
     ? [...hlsFlags, "-i", inputUrl]
     : [...httpFlags, "-i", inputUrl];
-
-  const inputArgs = hlsInputArgs;
 
   // ── AUDIO ONLY ──
   if (audioOnly) {
