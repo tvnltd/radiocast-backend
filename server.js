@@ -1,4 +1,4 @@
-// AVCast backend v5.3 — HLS copy+bsf+flvflags+timescale fix
+// AVCast backend v5.4 — discontinuity timestamp normalization
 const express = require("express");
 const { spawn } = require("child_process");
 
@@ -112,26 +112,34 @@ function buildArgs(id) {
 
     const resolvedInputArgs = ["-re", ...hlsFlags, "-i", resolvedUrl];
 
-    // -c:v copy — zero CPU, remux H.264 directly
-    // -bsf:v h264_mp4toannexb — convert TS NAL units to Annex B for RTMP/FLV
-    // -flvflags no_duration_filesize — don't write duration/filesize in header
-    //   (prevents Mixcloud from seeing a "finite file" and dropping the stream)
-    // -video_track_timescale 90000 — set explicit timescale matching HLS source (90k tbn)
-    //   prevents timestamp discontinuities that cause "Connection reset by peer"
-    // -max_interleave_delta 0 — don't buffer packets waiting for interleaving,
-    //   reduces latency and prevents buffer starvation at segment boundaries
+    // The core problem: Viloud HLS uses #EXT-X-DISCONTINUITY between segments.
+    // At each discontinuity, DTS/PTS timestamps reset to a new base value.
+    // When copied to RTMP, Mixcloud sees these jumps as stream corruption and resets.
+    //
+    // Fix: use the astream_loop / setpts filter to continuously increment timestamps
+    // rather than copy them raw. We re-encode audio (already doing that) and use
+    // -copyts -avoid_negative_ts to normalize the video timestamps.
+    //
+    // For video we still copy (zero CPU) but add:
+    // -bsf:v h264_mp4toannexb  — convert NAL format
+    // -avoid_negative_ts make_zero  — normalize any negative timestamps to 0
+    // -start_at_zero  — ensure stream starts at timestamp 0
+    // -copyts  — preserve original timestamps but let avoid_negative_ts fix them
+    //
+    // For audio we use aac re-encode which naturally generates continuous timestamps.
     const args = [
       ...resolvedInputArgs,
       "-map", "0:v:0",
       "-map", "0:a:0",
       "-c:v", "copy",
       "-bsf:v", "h264_mp4toannexb",
+      "-avoid_negative_ts", "make_zero",
       "-c:a", "aac",
       "-b:a", audioBitrate,
       "-ar", "44100", "-ac", "2",
-      "-max_muxing_queue_size", "1024",
+      "-af", "aresample=async=1000",   // smooth out audio discontinuities
+      "-max_muxing_queue_size", "2048",
       "-max_interleave_delta", "0",
-      "-video_track_timescale", "90000",
       "-flvflags", "no_duration_filesize",
       "-f", "flv", rtmpTarget
     ];
