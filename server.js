@@ -1,3 +1,4 @@
+// AVCast backend v5.1 — HLS re-encode, 3500k, 2s keyframes, -re pacing
 const express = require("express");
 const { spawn } = require("child_process");
 
@@ -72,7 +73,7 @@ function buildArgs(id) {
     "-m3u8_hold_counters", "1000",
     "-reconnect", "1",
     "-reconnect_delay_max", "10",
-    "-thread_queue_size", "512",
+    "-thread_queue_size", "4096",
     "-err_detect", "ignore_err",
   ];
 
@@ -109,7 +110,7 @@ function buildArgs(id) {
       }
     }
 
-    const resolvedInputArgs = [...hlsFlags, "-i", resolvedUrl];
+    const resolvedInputArgs = ["-re", ...hlsFlags, "-i", resolvedUrl];
 
     // HLS passthrough:
     // -c:v copy          — no re-encoding, zero CPU
