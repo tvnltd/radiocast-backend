@@ -50,10 +50,10 @@ function buildArgs(id) {
   const { inputUrl, rtmpUrl, streamKey, videoBitrate, audioBitrate, audioOnly, lowCpu, showLogo, logoText } = instances[id].config;
   const rtmpTarget = rtmpUrl.replace(/\/$/, "") + "/" + streamKey;
 
-  // Detect HLS input — M3U8 needs different flags than plain HTTP audio
+  // Detect HLS input
   const isHLS = /\.m3u8(\?|$)/i.test(inputUrl) || /hls/i.test(inputUrl);
 
-  // Base input flags for plain HTTP streams (MP3, AAC, OGG…)
+  // Plain HTTP stream flags (MP3, AAC, OGG)
   const httpFlags = [
     "-re",
     "-reconnect", "1",
@@ -63,11 +63,7 @@ function buildArgs(id) {
     "-timeout", "10000000",
   ];
 
-  // HLS-specific flags:
-  // - NO -re (HLS self-throttles via segment timing)
-  // - live_start_index -3 = start near live edge (last 3 segments)
-  // - allowed_extensions = accept ts/aac/mp3 segments
-  // - max_reload = keep retrying the playlist on error
+  // HLS flags — no -re, HLS self-throttles
   const hlsFlags = [
     "-allowed_extensions", "ALL",
     "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
@@ -77,49 +73,65 @@ function buildArgs(id) {
     "-reconnect", "1",
     "-reconnect_delay_max", "10",
     "-thread_queue_size", "512",
-    "-err_detect", "ignore_err",   // ignore corrupt packets, keep going
+    "-err_detect", "ignore_err",
   ];
 
   const inputArgs = isHLS
     ? [...hlsFlags, "-i", inputUrl]
     : [...httpFlags, "-i", inputUrl];
 
+  // ── AUDIO ONLY ──
   if (audioOnly) {
     return [
       ...inputArgs,
-      "-map", "0:a:0",          // only first audio track
+      "-map", "0:a:0",
       "-vn",
       "-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2",
       "-f", "flv", rtmpTarget
     ];
   }
 
-  // Shared video encoding args — CBR mode forces real bitrate output
-  // even for static black frames, which all major platforms require
-  function videoArgs(bitrate, bufsize) {
+  // ── HLS SOURCE: passthrough video, only re-encode audio ──
+  // Zero encoding cost — uses ~1% CPU regardless of resolution
+  if (isHLS) {
+    const args = [
+      ...inputArgs,
+      "-map", "0:v:0",          // first video stream from HLS (already H.264)
+      "-map", "0:a:0",          // first audio stream
+      "-c:v", "copy",           // NO re-encoding — pass H.264 directly to RTMP
+      "-c:a", "aac",
+      "-b:a", audioBitrate,
+      "-ar", "44100", "-ac", "2",
+      "-f", "flv", rtmpTarget
+    ];
+    return args;
+  }
+
+  // ── PLAIN AUDIO SOURCE (MP3/AAC): generate black canvas + encode ──
+  // CBR mode forces real bitrate even for static black frame
+  function videoEncodeArgs(bitrate, bufsize) {
     return [
       "-c:v", "libx264",
       "-preset", "ultrafast",
       "-tune", "stillimage",
       "-pix_fmt", "yuv420p",
       "-b:v", bitrate,
-      "-minrate", bitrate,        // force minimum bitrate — critical for static frames
+      "-minrate", bitrate,
       "-maxrate", bitrate,
       "-bufsize", bufsize,
-      "-x264-params", "nal-hrd=cbr:force-cfr=1",  // constant bitrate mode
-      "-profile:v", "baseline",   // broadest compatibility
+      "-x264-params", "nal-hrd=cbr:force-cfr=1",
+      "-profile:v", "baseline",
       "-level", "4.0",
     ];
   }
 
   if (lowCpu) {
-    // 720p @ 30fps, 2500k — meets Mixcloud, YouTube Live, Facebook Live minimums
     const args = [
       ...inputArgs,
       "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
       "-map", "1:v:0",
       "-map", "0:a:0",
-      ...videoArgs("2500k", "5000k"),
+      ...videoEncodeArgs("2500k", "5000k"),
       "-g", "60", "-r", "30",
     ];
     if (showLogo && logoText) {
@@ -130,13 +142,13 @@ function buildArgs(id) {
     return args;
   }
 
-  // Normal — same 720p but user-configurable bitrate
+  // Normal — 720p configurable bitrate
   const args = [
     ...inputArgs,
     "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
     "-map", "1:v:0",
     "-map", "0:a:0",
-    ...videoArgs(videoBitrate, String(parseInt(videoBitrate) * 2) + "k"),
+    ...videoEncodeArgs(videoBitrate, String(parseInt(videoBitrate) * 2) + "k"),
     "-g", "60", "-r", "30",
   ];
   if (showLogo && logoText) {
