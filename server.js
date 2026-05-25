@@ -76,6 +76,7 @@ function buildArgs(id) {
     "-m3u8_hold_counters", "1000",
     "-reconnect", "1",
     "-reconnect_delay_max", "10",
+    "-thread_queue_size", "512",
   ];
 
   const inputArgs = isHLS
